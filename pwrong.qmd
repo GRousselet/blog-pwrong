@@ -1,0 +1,452 @@
+---
+title: "Your p values are wrong"
+author: "Guillaume A. Rousselet"
+date: "`r Sys.Date()`"
+format: html
+        embed-resources: true
+editor: visual
+---
+
+# Dependencies
+
+```{r}
+library(tibble)
+library(ggplot2)
+source("./theme_gar.txt")
+source("./misc.R")
+```
+
+# Make data
+
+## Beta population to simulate percent correct data
+Percent correct data generated from a negatively skewed beta distribution with bulk of observations over 50%.
+
+```{r}
+bs1 <- 5 # beta shape 1 parameter
+bs2 <- 1.8 # beta shape 2 parameters
+pop.acc <- tibble(x = seq(0, 1, 0.001),
+                  y = dbeta(x, shape1 = bs1, shape2 = bs2))
+
+ggplot(pop.acc, aes(x, y)) + theme_gar +
+  geom_line() +
+  labs(x = "Percent correct", y = "Density") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid.minor.y = element_blank()) 
+```
+
+## Sample
+
+```{r}
+set.seed(21)
+n <- 50
+samp.acc <-  rbeta(n, shape1 = bs1, shape2 = bs2)
+```
+
+### Normality test
+Test of normality fails to reject the null hypothesis of normality.
+```{r}
+shapiro.test(samp.acc)
+```
+
+### Illustrate sample
+
+#### Scatterplot
+```{r, fig.width = 6, fig.height = 2}
+df <- tibble(x = samp.acc)
+
+ggplot(df, aes(x)) + theme_gar +
+  # superimpose mean
+  geom_vline(xintercept = mean(df$x), color = "darkorange2", linetype = "solid", linewidth = 1) +
+  geom_point(aes(y = 0), position = position_jitter(height = 0.5), size = 3, alpha = 0.75) +
+  labs(x = "Percent correct", y = "") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid.minor.y = element_blank()) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(-1, 1))
+```
+
+#### Density plot
+```{r}
+df <- tibble(x = samp.acc)
+binw <- 0.05 # number of bins in histogram
+
+ggplot(df) + theme_gar +
+  # density histogram
+  geom_histogram(data = df, aes(x, y = after_stat(density)), binwidth = binw, fill = "grey80", color = "black") +
+  # superimpose normal density function
+  stat_function(fun = dnorm, args = list(mean = mean(df$x), sd = sd(df$x)), 
+                xlim = c(0, 1), color = "darkorange2", linewidth = 1.5) +
+  labs(x = "Percent correct", y = "Density") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid.minor.y = element_blank()) +
+  coord_cartesian(xlim = c(0, 1))
+```  
+  
+#### Boxplot
+```{r}
+boxplot(samp.acc, horizontal = TRUE)
+```
+
+#### Modified boxplot rule
+Same outlier is identified when using Wilcox's modified boxplot function.
+```{r}
+outbox(samp.acc)$out.val
+```
+
+
+#### Q-Q plot
+```{r, fig.height=5, fig.width=5}
+df <- tibble(x = c(samp.acc))
+ggplot(df, aes(sample = x)) + theme_gar +
+  geom_qq() +
+  geom_qq_line() +
+  labs(x = "Theoretical quantiles", y = "Sample quantiles") +
+  theme(panel.grid.minor.y = element_blank())
+```
+
+# T-test
+
+```{r}
+mu.acc <- 0.70 # ACC hypothesis
+res <- t.test(samp.acc, mu = mu.acc, alternative = "greater")
+ci <- res$conf.int
+df <- res$parameter
+tval <- res$statistic
+pval <- res$p.value
+sprintf("The mean accuracy was %.2f%%, 95%% CI = [%.2f, %.2f], t(%g) = %.2f, p = %.4f.",
+  res$estimate,
+  ci[1], ci[2],
+  df,
+  tval,
+  pval)
+```
+
+## T-test calculation
+
+### Under normality
+```{r}
+alpha.val <- 0.05
+dof <- n-1 # degrees of freedom
+# crit.t <- qt(1 - alpha.val/2, dof) # critical t value for two-tailed test
+samp.t <- (mean(samp.acc) - mu.acc) / (sd(samp.acc) / sqrt(n)) # t value for accuracy sample
+
+df.pv2 <- tibble(x = seq(samp.t,5,0.01),
+                 y = dt(seq(samp.t,5,0.01), dof))
+
+df <- tibble(x = seq(-6, 6, 0.01),
+             y = dt(x, n-1))
+
+ggplot(df, aes(x=x, y=y)) + theme_gar +
+  geom_line() + 
+labs(y = "Density") +
+theme(axis.text = element_text(size = 14),
+        axis.title = element_text(size = 16),
+        plot.title = element_text(size=20),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+  coord_cartesian(xlim = c(-5, 5)) +
+  ggtitle(paste0("t distribution: df = ",dof,", t = ",round(samp.t, digits=2),", p = ",round(1-pt(abs(samp.t),dof), digits=4))) +
+  geom_area(data = df.pv2,
+            aes(x = x, y = y),
+            fill = "red", alpha = .2) +
+  geom_vline(xintercept = samp.t, colour = "red", linewidth = 1) +
+  xlab("t values")
+```
+
+### For the correct beta population
+
+#### Get sampling distribution
+```{r, eval=FALSE}
+set.seed(21)
+niter <- 100000 # number of simulation iterations
+tvals.norm <- vector(mode = "numeric", length = niter) # vector of t values under normality
+tvals.beta <- vector(mode = "numeric", length = niter) # vector of t values under beta
+m.beta <- bs1/(bs1+bs2) # mean of beta distribution 
+sd.beta <- sqrt(bs1*bs2/((bs1+bs2)^2 * (bs1+bs2+1))) # standard deviation of beta distribution
+
+for(S in 1:niter){
+  # generate sample: normal
+  samp <- rnorm(n, mean = 0, sd = sd.beta)
+  # calculate t value
+  tvals.norm[S] <- mean(samp) / (sd(samp) / sqrt(n))
+  # generate sample: beta
+  samp <- rbeta(n, shape1 = bs1, shape2 = bs2) - m.beta 
+  # calculate t value
+  tvals.beta[S] <- mean(samp) / (sd(samp) / sqrt(n))
+}
+save(tvals.norm, tvals.beta, 
+     file="./sim_beta.RData")
+```
+
+#### Figure
+```{r}
+load(file="./sim_beta.RData")
+
+out.norm <- density(tvals.norm)
+out.beta <- density(tvals.beta)
+x.seq <- seq(-6, 6, 0.01)
+
+df <- tibble(x = c(x.seq, out.norm$x, out.beta$x), 
+             y = c(dt(x.seq, n-1), out.norm$y, out.beta$y),
+             Population = factor(c(rep("Normal (theory)", length(x.seq)),
+                                   rep("Normal (sim)", length(out.norm$x)), 
+                                   rep("Beta (sim)", length(out.beta$x)))))
+
+df$Population <- keeporder(df$Population)
+
+ggplot(df, aes(x=x, y=y, linetype=Population)) + theme_gar +
+  geom_line() + 
+  theme(axis.text = element_text(size = 14),
+        axis.title = element_text(size = 16),
+        plot.title = element_text(size=20),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+  coord_cartesian(xlim = c(-5, 5)) +
+  labs(x = "t values", y = "Density") +
+  scale_linetype_manual(values = c("solid", "dashed", "dotted"))
+```
+
+#### Zoom in
+```{r}
+ggplot(df, aes(x=x, y=y, linetype=Population)) + theme_gar +
+  geom_line() + 
+  theme(axis.text = element_text(size = 14),
+        axis.title = element_text(size = 16),
+        plot.title = element_text(size=20),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+  coord_cartesian(xlim = c(2, 4.5), ylim = c(0, 0.1)) +
+  labs(x = "t values", y = "Density") +
+  scale_linetype_manual(values = c("solid", "dashed", "dotted"))
+```
+
+#### Get p values from simulated sampling distribution
+```{r}
+pval.norm <- mean(tvals.norm >= samp.t)
+pval.beta <- mean(tvals.beta >= samp.t)
+sprintf("one-sided p value from t-test: %.4f", 1-pt(abs(samp.t),dof))
+sprintf("one-sided p value under simulated normality: %.4f", pval.norm)
+sprintf("one-sided p value under simulated beta distribution: %.4f", pval.beta)
+```
+
+# Trimming data
+
+## Simulate t distributions
+
+We look at distributions of t values when sampling from normal and our beta distribution. T values are calculated after trimming 20% of the data on each side of the sample. We apply the wrong calculation, which assumes that the new sample size was the intended one, and the correct calculation that takes the trimming into account.
+```{r, eval=FALSE}
+set.seed(21)
+niter <- 100000 # number of simulation iterations
+tvals.norm.c <- vector(mode = "numeric", length = niter) # vector of t values under normality
+tvals.norm.nc <- vector(mode = "numeric", length = niter) # vector of t values under normality
+tvals.beta.c <- vector(mode = "numeric", length = niter) # vector of t values under beta
+tvals.beta.nc <- vector(mode = "numeric", length = niter) # vector of t values under beta
+tr <- 0.2 # trimming proportion
+tm.beta <- mean(rbeta(1000000, shape1 = bs1, shape2 = bs2), trim = tr) # approximate trimmed mean of beta population
+
+for(S in 1:niter){
+  
+  # generate sample: normal
+  x <- rnorm(n, mean = 0, sd = 1)
+  
+  # trim 20% of the data on each side
+  y <- sort(x)
+  ibot <- floor(tr*n)+1
+  itop <- n-ibot+1
+  y <- y[ibot:itop]
+  # calculate t value with wrong calculation
+  tvals.norm.nc[S] <- mean(y) / (sd(y) / sqrt(length(y)))
+  # calculate t value with correct calculation
+  se <- sqrt(winvar(x,tr))/((1-2*tr)*sqrt(length(x)))
+  df <- length(x)-2*floor(tr*length(x))-1
+  tvals.norm.c[S] <- (mean(x,tr))/se
+  
+  # generate sample: beta
+  x <- rbeta(n, shape1 = bs1, shape2 = bs2) - tm.beta
+  # trim 20% of the data on each side
+  y <- sort(x)
+  ibot <- floor(tr*n)+1
+  itop <- n-ibot+1
+  y <- y[ibot:itop]
+  # calculate t value with wrong calculation
+  tvals.beta.nc[S] <- mean(y) / (sd(y) / sqrt(length(y)))
+  # calculate t value with correct calculation
+  se <- sqrt(winvar(x,tr))/((1-2*tr)*sqrt(length(x)))
+  df <- length(x)-2*floor(tr*length(x))-1
+  tvals.beta.c[S] <- (mean(x,tr))/se
+}
+
+save(niter, tvals.norm.c, tvals.norm.nc, tvals.beta.c, tvals.beta.nc,
+     file = "./sim_trim.RData")
+```
+
+### Plot simulated t distributions
+```{r}
+load(file="./sim_trim.RData")
+
+df <- tibble(x = c(tvals.norm.c, tvals.norm.nc,
+                   tvals.beta.c, tvals.beta.nc), 
+             Population = factor(rep(c("Normal", "Beta"), each = niter*2)),
+             Method = factor(rep(c("Correct", "Incorrect"), each = niter, times = 2)))
+             
+df$Population <- keeporder(df$Population)
+
+ggplot(df, aes(x=x, linetype=Method)) + theme_gar +
+  geom_line(stat = "density") + 
+  theme(axis.text = element_text(size = 14),
+        axis.title = element_text(size = 16),
+        plot.title = element_text(size=20),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+  coord_cartesian(xlim = c(-6, 6)) +
+  labs(x = "t values", y = "Density") +
+  scale_linetype_manual(values = c("solid", "dashed")) +
+  facet_wrap(~ Population)
+```
+
+
+### Get p values for trimmed sample
+```{r}
+# trim the sample
+tr <- 0.2 # trimming proportion
+y <- sort(samp.acc)
+ibot <- floor(tr*n)+1
+itop <- n-ibot+1
+y <- y[ibot:itop]
+
+# Apply incorrect t-test
+sprintf("one-sided p value from t-test on means: %.4f", t.test(y, mu = mu.acc, alternative = "greater")$p.value)
+# Apply correct t-test to the original data before trimming
+res <- trimci(samp.acc, null.value = mu.acc)
+sprintf("one-sided p value from t-test on trimmed means: %.4f", res$p.value)
+sprintf("one-sided p value using simulated beta distribution: %.4f", mean(tvals.beta.c >= res$test.stat))
+```
+
+# Remove outliers
+
+## Check outlier frequency and simulate t distribution
+
+Sampling from our beta distribution, how many outliers do we detect in the long-run? 
+What's the matching t sampling distribution?
+
+```{r, eval=FALSE}
+set.seed(21)
+niter <- 100000 # number of simulation iterations
+tvals.beta <- vector(mode = "numeric", length = niter) # vector of t values under 
+out.beta <- vector(mode = "numeric", length = niter) # outlier frequency
+
+for(S in 1:niter){
+
+  # generate sample: beta
+  x <- rbeta(n, shape1 = bs1, shape2 = bs2) - m.beta
+  
+  # reject outliers using boxplot rule
+  out <- outbox(x)
+  out.beta[S] <- out$n.out
+  # calculate t value after outlier removal
+  y <- x[out$keep] # remove outliers
+  tvals.beta[S] <- mean(y) / (sd(y) / sqrt(length(y)))
+}
+
+save(tvals.beta, out.beta, file = "./sim_outlier.RData")
+```
+
+### Get p values for trimmed sample
+```{r}
+load(file = "./sim_outlier.RData")
+out <- outbox(samp.acc)
+res <- t.test(samp.acc[out$keep], mu = mu.acc, alternative = "greater")
+sprintf("one-sided p value from t-test: %.4f", res$p.value)
+sprintf("one-sided p value using simulated distribution: %.4f", mean(tvals.beta >= res$statistic))
+summary(out.beta)
+```
+
+# Sample size mistake
+
+Example from Kruschke, John K. ‘Bayesian Estimation Supersedes the t Test.’ Journal of Experimental Psychology. General 142, no. 2 (May 2013): 573–603. https://doi.org/10.1037/a0029146.
+
+The degrees of freedom, and therefore your $p$ values, depend on many factors, including your sampling intentions.
+
+Example:  
+
+A supervisor asked two research assistants to collect data from n=8 participants in total. They misunderstood the instructions, and instead collected n=8 each, so a total of n=16. The plan was to do a one-sample t-test. What sample size should the research team use to compute the degrees of freedom: 8 or 16? So 7 df or 15 df?
+
+The answer depends on the sampling distribution matching the data acquisition process, including the probability that the instructions are misunderstood. 
+
+## Intended vs. obtained sample size
+
+```{r}
+n.int <- 8 # requested sample size
+n.obt <- 16 # obtained sample size
+aath <- 0.05 # arbitrary alpha threshold
+df.int <- n.int - 1
+df.obt <- n.obt - 1
+t.crit.int <- qt(1-aath/2,df.int) # critical t value at which p = 0.05
+t.crit.obt <- qt(1-aath/2,df.obt) # critical t value at which p = 0.05
+
+x.seq <- seq(0,5,0.1)
+
+df <- tibble(x=c(x.seq,x.seq),
+             y=c(2*(1-pt(x.seq, df.int)), 2*(1-pt(x.seq, df.obt))),
+             outcome = factor(rep(c("intended (n=8)","obtained (n=16)"), each = length(x.seq))))
+
+# plot arrows
+df2 <- tibble(x = c(t.crit.int, t.crit.obt),
+              xend = c(t.crit.int, t.crit.obt),
+              y = rep(aath,2),
+              yend = rep(0,2))
+
+ggplot(df, aes(x=x,y=y)) + theme_gar +
+  geom_line(aes(colour=outcome,linetype=outcome)) +
+  labs(x="Critical t value", y="P value") +
+  geom_hline(yintercept = aath, linetype = "solid", linewidth = 0.25) +
+  scale_y_continuous(breaks = c(0,0.05,0.1,0.2,0.3,0.4)) +
+  geom_segment(x = t.crit.int, y = aath,
+               xend = t.crit.int, yend = 0,
+               colour = "black") +
+  geom_segment(x = t.crit.obt, y = aath,
+               xend = t.crit.obt, yend = 0,
+               colour = "black",
+               linetype = "dotted") +
+  theme(legend.position = c(.75, .8)) +
+  scale_color_manual(values=c("black", "black")) +
+  scale_linetype_manual(values = c("solid", "dotted")) +
+  coord_cartesian(xlim = c(1.5,4), ylim = c(0, 0.3))
+```
+
+## Correct curve for obtained sample size
+
+To determine the correct critical t value and the correct p value, we need to make an assumption about the probability to have a misunderstanding in the lab. Say it is 10%.
+
+```{r}
+prob.mis <- 0.10 # misunderstanding probability
+
+df <- tibble(x=c(x.seq,x.seq,x.seq),
+             y=c(2*(1-pt(x.seq, df.int)), 2*(1-pt(x.seq, df.obt)), (1-prob.mis)*2*(1-pt(x.seq, df.int)) + prob.mis*2*(1-pt(x.seq, df.obt)) ),
+             outcome = factor(rep(c("intended (n=8)","obtained (n=16)","obt. correct (n=16)"), each = length(x.seq))))
+
+t.crit.correct <- approx((1-prob.mis)*2*(1-pt(x.seq, df.int)) + prob.mis*2*(1-pt(x.seq, df.obt)), x.seq, xout=0.05)$y # critical t value at which p = 0.05
+
+ggplot(df, aes(x=x,y=y)) + theme_gar +
+  geom_line(aes(colour=outcome,linetype=outcome)) +
+  labs(x="Critical t value", y="P value") +
+  geom_hline(yintercept = aath, linetype = "solid", linewidth = 0.25) +
+  scale_y_continuous(breaks = c(0,0.05,0.1,0.2,0.3,0.4)) +
+  geom_segment(x = t.crit.int, y = aath,
+               xend = t.crit.int, yend = 0,
+               colour = "black") +
+  geom_segment(x = t.crit.obt, y = aath,
+               xend = t.crit.obt, yend = 0,
+               colour = "black",
+               linetype = "dotted") +
+  geom_segment(x = t.crit.correct, y = aath,
+               xend = t.crit.correct, yend = 0,
+               colour = "black",
+               linetype = "dashed") +
+  theme(legend.position = c(.75, .8)) +
+  scale_color_manual(values=c("black", "black", "black")) +
+  scale_linetype_manual(values = c("solid", "dashed", "dotted")) +
+  coord_cartesian(xlim = c(1.5,4), ylim = c(0, 0.3))
+```
